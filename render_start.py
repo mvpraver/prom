@@ -12,12 +12,25 @@ stopping = False
 
 
 class HealthHandler(BaseHTTPRequestHandler):
+    def _send_ok(self, with_body=True):
+        body = b"SunRoll bot is running"
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        if with_body:
+            self.wfile.write(body)
+
     def do_GET(self):
         if self.path in ("/", "/health", "/healthz"):
-            self.send_response(200)
-            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self._send_ok(with_body=True)
+        else:
+            self.send_response(404)
             self.end_headers()
-            self.wfile.write(b"SunRoll bot is running")
+
+    def do_HEAD(self):
+        if self.path in ("/", "/health", "/healthz"):
+            self._send_ok(with_body=False)
         else:
             self.send_response(404)
             self.end_headers()
