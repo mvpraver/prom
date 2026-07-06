@@ -46,7 +46,7 @@ def order_keyboard(order_id: str | int, telegraph_url: str | None = None, *, sho
     oid = str(order_id)
     rows: list[list[InlineKeyboardButton]] = []
     if telegraph_url:
-        rows.append([InlineKeyboardButton(text="🌐 Повне замовлення в Telegraph", url=telegraph_url)])
+        rows.append([InlineKeyboardButton(text="🌐 Повна інформація про замовлення", url=telegraph_url)])
     rows.extend(
         [
             [
