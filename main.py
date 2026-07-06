@@ -86,7 +86,7 @@ BOOTSTRAP_MESSAGES_ON_START = os.getenv("BOOTSTRAP_MESSAGES_ON_START", "false").
 SKIP_OUTGOING_MESSAGES = os.getenv("SKIP_OUTGOING_MESSAGES", "true").lower() in {"1", "true", "yes", "y"}
 MESSAGE_LIST_LIMIT = int(os.getenv("MESSAGE_LIST_LIMIT", "50") or "50")
 RECENT_ORDER_MINUTES = int(os.getenv("RECENT_ORDER_MINUTES", "360") or "360")
-BOT_BUILD_VERSION = "v34_clean_messages_orders_reply"
+BOT_BUILD_VERSION = "v35_orders_newest_reply_fix"
 
 if not BOT_TOKEN:
     raise RuntimeError("TELEGRAM_BOT_TOKEN is empty. Fill .env")
@@ -700,10 +700,15 @@ async def show_customer_message_from_db(chat_id: int, row_id: str | int, *, edit
 
     if edit_message:
         await edit_message.edit_text(text, reply_markup=kb, disable_web_page_preview=True)
+        # This is the key fix for replies from the “💬 Повідомлення” menu:
+        # the list message is edited into a message card, so we must force this
+        # Telegram message id to point to the currently opened Prom chat/message.
+        await db.map_tg_message_to_prom_message(edit_message.message_id, prom_message_id)
         await db.add_message(prom_message_id, edit_message.message_id)
         tg_message_id = edit_message.message_id
     else:
         sent = await bot.send_message(chat_id, text, reply_markup=kb, disable_web_page_preview=True)
+        await db.map_tg_message_to_prom_message(sent.message_id, prom_message_id)
         await db.add_message(prom_message_id, sent.message_id)
         tg_message_id = sent.message_id
 
@@ -1204,6 +1209,69 @@ async def cb_order_cancel(callback: CallbackQuery):
         await callback.message.reply(f"⚠️ Не вдалось скасувати: <code>{str(e)[:1500]}</code>")
 
 
+
+
+def _chat_room_id_from_prom_message_key(message_key: str) -> str:
+    key = str(message_key or "").strip()
+    if key.startswith("chat:"):
+        parts = key.split(":", 2)
+        if len(parts) >= 2:
+            return str(parts[1] or "").strip()
+    return ""
+
+
+def _chat_room_id_from_raw_message(raw: dict[str, Any]) -> str:
+    if not isinstance(raw, dict):
+        return ""
+    room_id = val(raw, "__chat_room_id", "room_id", "chat_id", "dialog_id", default="")
+    if room_id and room_id != "—":
+        return str(room_id).strip()
+    room = raw.get("__chat_room")
+    if isinstance(room, dict):
+        room_id = val(room, "id", "room_id", "chat_id", "dialog_id", default="")
+        if room_id and room_id != "—":
+            return str(room_id).strip()
+    return ""
+
+
+async def _reply_targets_for_prom_message(prom_message_id: str) -> list[str]:
+    """Build safe reply targets for a message opened from the menu.
+
+    The local row can sometimes have a synthetic hash id, but raw_json still
+    contains the Prom chat room id. In that case we reply to the room instead of
+    the fake message id, so replies from “💬 Повідомлення” reach Prom correctly.
+    """
+    targets: list[str] = []
+
+    def add(target: str):
+        target = str(target or "").strip()
+        if target and target not in targets:
+            targets.append(target)
+
+    add(str(prom_message_id))
+
+    try:
+        row = await db.get_customer_message_by_prom_id(str(prom_message_id))
+    except Exception:
+        row = None
+
+    raw: dict[str, Any] = {}
+    if row:
+        try:
+            raw_text = row["raw_json"] if "raw_json" in row.keys() else ""
+            raw = json.loads(raw_text) if raw_text else {}
+        except Exception:
+            raw = {}
+
+    room_id = _chat_room_id_from_prom_message_key(str(prom_message_id)) or _chat_room_id_from_raw_message(raw)
+    if room_id:
+        add(f"chat:{room_id}:reply")
+
+    # If the saved id is a fake hash, do not waste the first API attempt on it.
+    real_targets = [t for t in targets if has_real_prom_message_id(t)]
+    return real_targets or targets
+
+
 @dp.message(F.text)
 async def reply_to_prom_message(message: Message):
     if not is_admin(message.from_user.id if message.from_user else None):
@@ -1219,35 +1287,59 @@ async def reply_to_prom_message(message: Message):
     if not text:
         return
 
-    if not has_real_prom_message_id(str(prom_message_id)):
-        await message.reply("⚠️ У цього повідомлення немає реального Prom message_id, тому відповісти назад через API не вийде. Скинь мені /debug_messages або /debug_chat_endpoints — треба побачити raw JSON чату.")
+    targets = await _reply_targets_for_prom_message(str(prom_message_id))
+    if not targets or not any(has_real_prom_message_id(t) for t in targets):
+        await message.reply(
+            "⚠️ Не знайшов реальний Prom chat/message id для відповіді. "
+            "Натисни «🔄 Оновити з Prom» у повідомленнях і відкрий клієнта ще раз."
+        )
         return
 
+    errors: list[str] = []
     try:
         async with PromClient(PROM_TOKEN) as prom:
-            reply_result = await prom.reply_message(prom_message_id, text)
+            reply_result = None
+            used_target = ""
+            for target in targets:
+                if not has_real_prom_message_id(str(target)):
+                    continue
+                try:
+                    reply_result = await prom.reply_message(target, text)
+                    used_target = str(target)
+                    break
+                except Exception as inner:
+                    errors.append(f"{target}: {str(inner)[:700]}")
+                    continue
+
+            if reply_result is None:
+                raise PromAPIError("Не спрацював жоден варіант відповіді:\n" + "\n".join(errors[:10]))
+
             try:
-                await prom.set_message_status(prom_message_id, "read")
+                await prom.set_message_status(used_target or prom_message_id, "read")
             except Exception:
                 pass
+
+        try:
+            await db.update_customer_conversation_status_local(used_target or prom_message_id, "read")
+        except Exception:
             try:
                 await db.update_customer_conversation_status_local(prom_message_id, "read")
             except Exception:
-                try:
-                    await db.update_customer_message_status_local(prom_message_id, "read")
-                except Exception:
-                    pass
+                pass
+
         payload_used = ""
         if isinstance(reply_result, dict):
             payload_used = str(reply_result.get("__payload_used") or "")
         if payload_used:
-            await message.reply(f"✅ Відповідь прийнята Prom. Варіант API: <code>{html_escape(payload_used)}</code>")
+            await message.reply(f"✅ Відповідь відправлена в Prom. API: <code>{html_escape(payload_used)}</code>")
         else:
-            await message.reply("✅ Відповідь прийнята Prom")
+            await message.reply("✅ Відповідь відправлена в Prom")
     except Exception as e:
         log.exception("Failed to reply Prom message")
-        await message.reply(f"⚠️ Не вдалось відправити відповідь у Prom: <code>{str(e)[:1500]}</code>")
-
+        details = ""
+        if errors:
+            details = "\n\nСпробовані цілі:\n<code>" + html_escape("\n".join(errors[:5])) + "</code>"
+        await message.reply(f"⚠️ Не вдалось відправити відповідь у Prom: <code>{html_escape(str(e)[:1200])}</code>{details}")
 
 async def sync_orders_from_prom(prom: PromClient) -> int:
     """Pull current Prom order list into local DB without Telegram spam.

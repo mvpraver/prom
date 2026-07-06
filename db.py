@@ -380,11 +380,23 @@ class DB:
         return row["prom_message_id"] if row else None
 
     async def get_last_orders(self, limit: int = 10, offset: int = 0):
+        """Return orders from newest to oldest for the bottom “📦 Всі замовлення” menu.
+
+        Prom order ids grow over time, while updated_at can change when we sync old
+        orders. Sorting by numeric order_id first keeps the newest Prom order at the
+        top and the oldest at the bottom.
+        """
         cur = await self.conn.execute(
             """
             SELECT order_id, order_date, client_name, phone, total_price, prom_status, delivery_city, telegraph_url, updated_at
             FROM orders
-            ORDER BY updated_at DESC
+            ORDER BY
+                CASE
+                    WHEN order_id GLOB '[0-9]*' THEN CAST(order_id AS INTEGER)
+                    ELSE 0
+                END DESC,
+                updated_at DESC,
+                first_seen_at DESC
             LIMIT ? OFFSET ?
             """,
             (limit, offset),
@@ -445,6 +457,25 @@ class DB:
             (int(row_id),),
         )
         return await cur.fetchone()
+
+    async def get_customer_message_by_prom_id(self, prom_message_id: str):
+        cur = await self.conn.execute(
+            "SELECT rowid AS row_num, * FROM customer_messages WHERE prom_message_id=?",
+            (str(prom_message_id),),
+        )
+        return await cur.fetchone()
+
+    async def map_tg_message_to_prom_message(self, tg_message_id: int, prom_message_id: str):
+        """Force reply mapping for edited menu cards.
+
+        Unlike add_message(), this does not depend on seen_messages and always makes
+        the current Telegram message id point to the currently opened Prom message.
+        """
+        await self.conn.execute(
+            "INSERT OR REPLACE INTO tg_message_map(tg_message_id, prom_message_id) VALUES (?, ?)",
+            (int(tg_message_id), str(prom_message_id)),
+        )
+        await self.conn.commit()
 
     async def update_customer_message_status_local(self, prom_message_id: str, status: str = "read"):
         await self.conn.execute(

@@ -28,7 +28,7 @@ def to_kyiv(dt: datetime) -> datetime:
         dt = dt.replace(tzinfo=timezone.utc)
     return dt.astimezone(kyiv_tz())
 
-FORMATTERS_VERSION = "v34_clean_messages_orders_reply"
+FORMATTERS_VERSION = "v35_orders_newest_reply_fix"
 
 EMPTY = (None, "", [], {})
 
