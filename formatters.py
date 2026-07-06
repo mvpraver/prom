@@ -28,7 +28,7 @@ def to_kyiv(dt: datetime) -> datetime:
         dt = dt.replace(tzinfo=timezone.utc)
     return dt.astimezone(kyiv_tz())
 
-FORMATTERS_VERSION = "v29_message_menu_title"
+FORMATTERS_VERSION = "v34_clean_messages_orders_reply"
 
 EMPTY = (None, "", [], {})
 
@@ -1412,7 +1412,7 @@ def format_order_from_db(order, items) -> str:
     point_value = warehouse if warehouse and warehouse != "—" else (address if address else "—")
 
     text = (
-        f"🧾 <b>Замовлення №{e(order['order_id'])}</b>\n\n"
+        f"🧾 <b>Замовлення № {e(order['order_id'])}</b>\n\n"
         f"📌 Статус: <b>{e(human_status(order['prom_status']))}</b>\n"
         f"📅 Дата: {e(format_date(order['order_date']))}\n\n"
         f"👤 <b>Клієнт</b>\n"
@@ -1641,7 +1641,7 @@ def format_order_short_from_db(order: Any, items: list[Any], store_name: str) ->
     delivery_point = delivery_point_from_summary(s)
 
     text = (
-        f"🧾 <b>Замовлення №{e(s.get('order_id') or '—')}</b>\n"
+        f"🧾 <b>Замовлення № {e(s.get('order_id') or '—')}</b>\n"
         f"📌 {e(human_status(s.get('status') or ''))}\n"
         f"🕒 {e(s.get('order_date') or '—')}\n\n"
         f"👤 <b>{e(s.get('client_name') or '—')}</b>\n"
@@ -1704,6 +1704,7 @@ def format_messages_page(rows, offset: int = 0, total: int | None = None) -> str
         f"💬 <b>Повідомлення {offset + 1}–{offset + len(rows)}{total_text}</b>\n\n"
         "🔴 — непрочитано / треба відповісти\n"
         "🟢 — прочитано / вже відповіли\n\n"
+        "Найновіші клієнти зверху, старіші знизу.\n"
         "Натисни на клієнта нижче, щоб відкрити переписку."
     )
 
@@ -1793,7 +1794,7 @@ def telegraph_nodes_from_db(order, items) -> list[dict[str, Any]]:
 def telegraph_nodes_from_summary(s: dict[str, Any], store_name: str) -> list[dict[str, Any]]:
     """Full order page for Telegraph: the same useful info as the full Prom order, without raw/debug noise."""
     nodes: list[dict[str, Any]] = []
-    nodes.append(_node("h3", f"Замовлення №{_tg_clean(s.get('order_id'))}"))
+    nodes.append(_node("h3", f"Замовлення № {_tg_clean(s.get('order_id'))}"))
 
     payment = s.get("payment")
     payment_status = s.get("payment_status") or ""
@@ -1872,7 +1873,7 @@ def telegraph_nodes_from_summary(s: dict[str, Any], store_name: str) -> list[dic
 def telegraph_title_from_summary(summary: dict[str, Any]) -> str:
     oid = pick_text(summary.get("order_id") or "") or "замовлення"
     client = pick_text(summary.get("client_name") or "").strip()
-    base = f"Prom замовлення №{oid}"
+    base = f"Prom замовлення № {oid}"
     if client and client != "—":
         base += f" — {client}"
     return base[:80]

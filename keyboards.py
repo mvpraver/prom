@@ -42,11 +42,11 @@ def main_menu_keyboard() -> ReplyKeyboardMarkup:
         selective=False,
     )
 
-def order_keyboard(order_id: str | int, telegraph_url: str | None = None) -> InlineKeyboardMarkup:
+def order_keyboard(order_id: str | int, telegraph_url: str | None = None, *, show_db_button: bool = True) -> InlineKeyboardMarkup:
     oid = str(order_id)
     rows: list[list[InlineKeyboardButton]] = []
     if telegraph_url:
-        rows.append([InlineKeyboardButton(text="🌐 Повна інформація про замовлення", url=telegraph_url)])
+        rows.append([InlineKeyboardButton(text="🌐 Повне замовлення в Telegraph", url=telegraph_url)])
     rows.extend(
         [
             [
@@ -56,11 +56,10 @@ def order_keyboard(order_id: str | int, telegraph_url: str | None = None) -> Inl
             [
                 InlineKeyboardButton(text="❌ Скасовано", callback_data=f"order_cancel:{oid}:another"),
             ],
-            [
-                InlineKeyboardButton(text="📋 Відкрити з бази", callback_data=f"order_open:{oid}"),
-            ],
         ]
     )
+    if show_db_button:
+        rows.append([InlineKeyboardButton(text="📋 Відкрити з бази", callback_data=f"order_open:{oid}")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 

@@ -86,7 +86,7 @@ BOOTSTRAP_MESSAGES_ON_START = os.getenv("BOOTSTRAP_MESSAGES_ON_START", "false").
 SKIP_OUTGOING_MESSAGES = os.getenv("SKIP_OUTGOING_MESSAGES", "true").lower() in {"1", "true", "yes", "y"}
 MESSAGE_LIST_LIMIT = int(os.getenv("MESSAGE_LIST_LIMIT", "50") or "50")
 RECENT_ORDER_MINUTES = int(os.getenv("RECENT_ORDER_MINUTES", "360") or "360")
-BOT_BUILD_VERSION = "v32_multi_admins"
+BOT_BUILD_VERSION = "v34_clean_messages_orders_reply"
 
 if not BOT_TOKEN:
     raise RuntimeError("TELEGRAM_BOT_TOKEN is empty. Fill .env")
@@ -451,7 +451,7 @@ async def create_telegraph_page_for_db_order(order_id: str) -> str:
     if not TELEGRAPH_ENABLED:
         return ""
     try:
-        title = f"Prom замовлення №{order_id}"[:80]
+        title = f"Prom замовлення № {order_id}"[:80]
         nodes = telegraph_nodes_from_db(order, items)
         client = TelegraphClient(token=TELEGRAPH_ACCESS_TOKEN, author_name=STORE_NAME)
         url = await client.create_page(title, nodes, author_name=STORE_NAME)
@@ -550,7 +550,7 @@ async def send_order_to_admin(order: dict, order_id: str | int):
                     await bot.send_document(
                         chat_id,
                         FSInputFile(path),
-                        caption=f"📄 Повна версія замовлення №{order_id}",
+                        caption=f"📄 Повна версія замовлення № {order_id}",
                     )
                 else:
                     await bot.send_message(chat_id, full_text, disable_web_page_preview=True)
@@ -581,7 +581,7 @@ async def send_order_details(chat_id: int, order_id: str):
     await bot.send_message(
         chat_id,
         text,
-        reply_markup=order_keyboard(order_id, telegraph_url),
+        reply_markup=order_keyboard(order_id, telegraph_url, show_db_button=False),
         disable_web_page_preview=True,
     )
 

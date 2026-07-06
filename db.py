@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import json
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -304,6 +305,25 @@ class DB:
         mid = str(summary.get("message_id") or "")
         if not mid:
             return
+
+        # Do not save fake/technical rows in the Messages menu:
+        # - our own seller replies,
+        # - rows with placeholder name like "Клієнт",
+        # - empty context-only messages without text and without real attachments.
+        try:
+            fake_row = {
+                "prom_message_id": mid,
+                "client_name": summary.get("client_name"),
+                "text": summary.get("text"),
+                "raw_json": json.dumps(message or {}, ensure_ascii=False),
+            }
+            if not self._row_is_real_client_message(fake_row):
+                await self.delete_customer_message(mid)
+                await self.add_message(mid, tg_message_id)
+                return
+        except Exception:
+            pass
+
         await self.conn.execute(
             """
             INSERT INTO customer_messages(
@@ -519,6 +539,133 @@ class DB:
             or "отвеч" in value
         )
 
+    def _clean_msg_value(self, value: Any) -> str:
+        text = str(value or "").strip()
+        if text.lower() in {"none", "null", "undefined"}:
+            return ""
+        return text
+
+    def _message_client_is_real_value(self, value: Any) -> bool:
+        client = " ".join(self._clean_msg_value(value).split())
+        low = client.lower()
+        return bool(client) and low not in {
+            "—", "-", "_", "клієнт", "клиент", "client", "customer", "buyer",
+            "покупець", "покупатель", "unknown", "невідомо", "неизвестно",
+        }
+
+    def _boolish(self, value: Any) -> bool | None:
+        if value is True:
+            return True
+        if value is False:
+            return False
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            if value == 1:
+                return True
+            if value == 0:
+                return False
+        text = str(value or "").strip().lower()
+        if text in {"1", "true", "yes", "y", "так", "да", "on"}:
+            return True
+        if text in {"0", "false", "no", "n", "ні", "нет", "off", "none", "null", ""}:
+            return False
+        return None
+
+    def _raw_message_is_outgoing(self, raw: Any) -> bool:
+        """Local DB-side outgoing filter so seller replies never appear in the client list."""
+        if not isinstance(raw, dict):
+            return False
+        incoming_markers = {"in", "incoming", "inbound", "buyer", "client", "customer", "user", "visitor", "lead"}
+        outgoing_markers = {"out", "outgoing", "outbound", "seller", "company", "shop", "store", "me", "owner", "operator", "manager", "admin", "merchant"}
+
+        if "is_sender" in raw:
+            b = self._boolish(raw.get("is_sender"))
+            if b is not None:
+                return b
+        for key in ("is_outgoing", "outgoing", "from_company", "from_seller", "by_company", "is_shop", "is_operator", "is_manager", "is_admin", "is_mine", "is_my", "from_me", "mine"):
+            if key in raw and self._boolish(raw.get(key)) is True:
+                return True
+        for key in ("direction", "message_direction", "sender_type", "author_type", "from_type", "side", "role", "sender_role", "author_role"):
+            value = str(raw.get(key) or "").strip().lower()
+            if value in incoming_markers:
+                return False
+            if value in outgoing_markers:
+                return True
+        for key in ("sender", "from", "author", "user", "from_user", "participant"):
+            sender = raw.get(key)
+            if not isinstance(sender, dict):
+                continue
+            for flag in ("is_sender", "is_seller", "is_company", "is_shop", "is_operator", "is_owner", "is_me", "me", "from_me", "mine"):
+                if flag in sender and self._boolish(sender.get(flag)) is True:
+                    return True
+            for role_key in ("type", "role", "sender_type", "author_type", "from_type", "side", "kind"):
+                value = str(sender.get(role_key) or "").strip().lower()
+                if value in incoming_markers:
+                    return False
+                if value in outgoing_markers:
+                    return True
+        return False
+
+    def _raw_message_has_attachment(self, raw: Any) -> bool:
+        """True only for real client attachments, not product context thumbnails."""
+        if not isinstance(raw, dict):
+            return False
+        attachment_keys = {
+            "attachments", "attachment", "files", "file", "documents", "document",
+            "photos", "photo", "media", "medias", "uploaded_files", "uploads",
+        }
+        for key, value in raw.items():
+            if key in attachment_keys and value not in (None, "", [], {}):
+                if key == "photo" and isinstance(value, str) and value == str(raw.get("context_item_image_url") or ""):
+                    continue
+                return True
+        msg_type = str(raw.get("type") or raw.get("message_type") or raw.get("media_type") or "").strip().lower()
+        if msg_type in {"photo", "image", "picture", "file", "document", "attachment", "pdf"}:
+            url = str(raw.get("url") or raw.get("href") or raw.get("file_url") or raw.get("download_url") or "").strip()
+            if url and url != str(raw.get("context_item_image_url") or ""):
+                return True
+        return False
+
+    def _message_text_is_real_value(self, value: Any) -> bool:
+        text = " ".join(self._clean_msg_value(value).split())
+        return bool(text) and text not in {"—", "-", "_"}
+
+    def _row_is_real_client_message(self, row: Any) -> bool:
+        d = self._row_to_dict(row)
+        if not self._message_client_is_real_value(d.get("client_name")):
+            return False
+        raw = {}
+        try:
+            raw_text = d.get("raw_json") or ""
+            raw = json.loads(raw_text) if raw_text else {}
+        except Exception:
+            raw = {}
+        if isinstance(raw, dict) and self._raw_message_is_outgoing(raw):
+            return False
+        return self._message_text_is_real_value(d.get("text")) or self._raw_message_has_attachment(raw)
+
+    def _message_sort_ts(self, row: Any) -> float:
+        d = self._row_to_dict(row)
+        raw = self._clean_msg_value(d.get("message_date"))
+        if raw:
+            candidates = [raw.replace("Z", "+00:00")]
+            # formatters.py often stores dates as: 06.07.2026 о 17:38
+            candidates.append(raw.replace(" о ", " "))
+            for candidate in candidates:
+                try:
+                    dt = datetime.fromisoformat(candidate)
+                    if dt.tzinfo is None:
+                        dt = dt.replace(tzinfo=timezone.utc)
+                    return dt.timestamp()
+                except Exception:
+                    pass
+                for fmt in ("%d.%m.%Y %H:%M", "%d.%m.%Y %H:%M:%S", "%d.%m.%Y"):
+                    try:
+                        dt = datetime.strptime(candidate, fmt).replace(tzinfo=timezone.utc)
+                        return dt.timestamp()
+                    except Exception:
+                        pass
+        return float(d.get("first_seen_at") or d.get("updated_at") or 0)
+
     def _message_thread_key(self, row: Any) -> str:
         d = self._row_to_dict(row)
         # Групуємо насамперед по клієнту, щоб один і той самий клієнт не повторювався.
@@ -544,11 +691,10 @@ class DB:
                 return "chat:" + parts[1]
         return "message:" + mid
 
-    def _message_order_key(self, row: Any) -> tuple[str, int, int]:
+    def _message_order_key(self, row: Any) -> tuple[float, int, int]:
         d = self._row_to_dict(row)
-        # ISO dates sort correctly as strings; fallback to DB timestamps.
         return (
-            str(d.get("message_date") or ""),
+            self._message_sort_ts(row),
             int(d.get("first_seen_at") or 0),
             int(d.get("row_num") or 0),
         )
@@ -561,13 +707,16 @@ class DB:
                    phone, email, order_id, product_id, product_name, sku, product_url, text,
                    first_seen_at, updated_at, raw_json
             FROM customer_messages
-            ORDER BY message_date DESC, first_seen_at DESC, rowid DESC
+            ORDER BY first_seen_at DESC, updated_at DESC, rowid DESC
             """
         )
-        return await cur.fetchall()
+        rows = await cur.fetchall()
+        rows = [row for row in rows if self._row_is_real_client_message(row)]
+        rows.sort(key=self._message_sort_ts, reverse=True)
+        return rows
 
     async def get_customer_message_threads_page(self, limit: int = 10, offset: int = 0):
-        """Return one button row per customer/thread: unread threads first, then read, newest first."""
+        """One button per real client. Newest client conversation first, oldest last."""
         rows = await self._get_all_customer_message_rows_for_threads()
         grouped: dict[str, list[Any]] = {}
         for row in rows:
@@ -582,16 +731,11 @@ class DB:
             latest["thread_total"] = len(items_sorted)
             latest["unread_count"] = unread_count
             latest["status"] = "unread" if unread_count else "read"
+            latest["sort_ts"] = self._message_sort_ts(items_sorted[0])
             threads.append(latest)
 
-        threads.sort(key=lambda d: (0 if int(d.get("unread_count") or 0) else 1, str(d.get("message_date") or ""), int(d.get("first_seen_at") or 0)), reverse=False)
-        # The previous line sorts read flag ascending but dates ascending; fix date order manually inside groups.
-        unread = [t for t in threads if int(t.get("unread_count") or 0) > 0]
-        read = [t for t in threads if int(t.get("unread_count") or 0) <= 0]
-        unread.sort(key=lambda d: (str(d.get("message_date") or ""), int(d.get("first_seen_at") or 0)), reverse=True)
-        read.sort(key=lambda d: (str(d.get("message_date") or ""), int(d.get("first_seen_at") or 0)), reverse=True)
-        result = unread + read
-        return result[int(offset or 0): int(offset or 0) + int(limit or 10)]
+        threads.sort(key=lambda d: (float(d.get("sort_ts") or 0), int(d.get("first_seen_at") or 0), int(d.get("row_num") or 0)), reverse=True)
+        return threads[int(offset or 0): int(offset or 0) + int(limit or 10)]
 
     async def count_customer_message_threads(self) -> int:
         rows = await self._get_all_customer_message_rows_for_threads()
