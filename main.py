@@ -727,15 +727,6 @@ async def cmd_start(message: Message):
         return
     await message.answer(
         "Бот запущений.\n\n"
-        "• Нові замовлення будуть приходити сюди з кнопками статусів.\n"
-        "• Нові повідомлення будуть приходити сюди. Щоб відповісти клієнту — зроби reply на повідомлення бота.\n"
-        "• Знизу є кнопка <b>📦 Всі замовлення</b> — відкриває базу замовлень з кнопками.\n"
-        "• /id — покаже твій Telegram ID.\n"
-        "• /sync_orders — підтягнути/оновити замовлення з Prom у базу.\n"
-        "• /export_orders — експорт замовлень у CSV.\n"
-        "• /debug_messages — діагностика чату Prom.\n"
-        "• /debug_orders — діагностика замовлень Prom.",
-        reply_markup=main_menu_keyboard(),
     )
 
 
@@ -1492,7 +1483,7 @@ async def polling_loop():
                 try:
                     await bot.send_message(
                         chat_id,
-                        f"✅ Бот запущений для магазину <b>{STORE_NAME}</b>! Інтервал перевірки: {POLL_INTERVAL} сек.",
+                        f"✅ Бот успішно запущений! Інтервал оновлення даних: {POLL_INTERVAL} сек.",
                         reply_markup=main_menu_keyboard(),
                     )
                 except Exception:
