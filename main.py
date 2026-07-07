@@ -1492,7 +1492,7 @@ async def polling_loop():
                 try:
                     await bot.send_message(
                         chat_id,
-                        f"✅ Prom → Telegram бот запущений для магазину <b>{STORE_NAME}</b>. Інтервал перевірки: {POLL_INTERVAL} сек.\n\nЗнизу є кнопки: <b>📦 Всі замовлення</b>, <b>💬 Повідомлення</b>, <b>🛠 Тех. підтримка</b>.",
+                        f"✅ Бот запущений для магазину <b>{STORE_NAME}</b>! Інтервал перевірки: {POLL_INTERVAL} сек.",
                         reply_markup=main_menu_keyboard(),
                     )
                 except Exception:
